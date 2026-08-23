@@ -1,0 +1,1 @@
+window.RBM_CLOUD_CONFIG={supabaseUrl:'ISI_SUPABASE_URL_DI_SINI',supabaseAnonKey:'ISI_SUPABASE_ANON_KEY_DI_SINI'};
