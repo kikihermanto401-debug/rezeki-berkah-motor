@@ -1,1 +1,1 @@
-window.RBM_CLOUD_CONFIG={supabaseUrl:'ISI_SUPABASE_URL_DI_SINI',supabaseAnonKey:'ISI_SUPABASE_ANON_KEY_DI_SINI'};
+window.RBM_CLOUD_CONFIG={supabaseUrl:'ISI_SUPABASE_URL_DI_SINI',supabaseAnonKey:'ISI_SUPABASE_ANON_KEY_DI_SINI'};(function(){var l=document.createElement('link');l.rel='stylesheet';l.href='restore-theme.css?v=2';document.head.appendChild(l);var s=document.createElement('script');s.src='restore-theme.js?v=2';s.async=false;document.head.appendChild(s)})();
