@@ -8,10 +8,12 @@ function build(){
   const app=document.querySelector('.app');
   if(app) document.body.insertBefore(bar,app); else document.body.prepend(bar);
   bar.querySelector('.rbm-mobile-logout').addEventListener('click',function(){
-    const logout=document.getElementById('rbmCloudLogout');
-    if(logout){ logout.click(); return; }
+    const authLogout=document.getElementById('rbmAuthLogout');
+    if(authLogout){authLogout.click();return;}
+    const cloudLogout=document.getElementById('rbmCloudLogout');
+    if(cloudLogout){cloudLogout.click();return;}
     const cloud=document.getElementById('rbmCloudStatus');
-    if(cloud){ cloud.click(); setTimeout(()=>document.getElementById('rbmCloudLogout')?.click(),150); }
+    if(cloud){cloud.click();setTimeout(()=>document.getElementById('rbmCloudLogout')?.click(),150);}
   });
 }
 if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',build); else build();
