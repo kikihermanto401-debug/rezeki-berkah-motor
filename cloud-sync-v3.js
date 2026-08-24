@@ -1,0 +1,67 @@
+(function(){
+'use strict';
+const cfg=window.RBM_CLOUD_CONFIG||{};
+const TX='rbm_tx',CF='rbm_cf',ST='rbm_store';
+const DTX='rbm_deleted_tx_v3',DCF='rbm_deleted_cf_v3',BACKUP='rbm_cloud_last_backup';
+let sb=null,session=null,syncing=false,timer=null,periodic=null;
+const nativeSet=localStorage.setItem.bind(localStorage);
+const nativeGet=localStorage.getItem.bind(localStorage);
+function parse(k,f){try{const v=JSON.parse(nativeGet(k)||'null');return v==null?f:v}catch(e){return f}}
+function valid(){return !!(window.supabase&&/^https:\/\/.+\.supabase\.co\/?$/.test(String(cfg.supabaseUrl||''))&&String(cfg.supabaseAnonKey||'').length>30)}
+function ids(a){return new Set((a||[]).map(x=>String(x.id)))}
+function deletedSet(k){return new Set(parse(k,[]).map(String))}
+function saveDeleted(k,s){nativeSet(k,JSON.stringify([...s].slice(-1000)))}
+function markDeletes(key,delKey,oldRaw,newRaw){
+ try{const a=JSON.parse(oldRaw||'[]'),b=JSON.parse(newRaw||'[]');if(!Array.isArray(a)||!Array.isArray(b))return;const nb=ids(b),d=deletedSet(delKey);a.forEach(x=>{if(x&&x.id!=null&&!nb.has(String(x.id)))d.add(String(x.id))});saveDeleted(delKey,d)}catch(e){}
+}
+function installStorageHook(){
+ localStorage.setItem=function(k,v){
+   const old=nativeGet(k);
+   if(k===TX)markDeletes(TX,DTX,old,v);
+   if(k===CF)markDeletes(CF,DCF,old,v);
+   nativeSet(k,v);
+   if(k===TX||k===CF||k===ST)schedule();
+ };
+}
+function status(text,state='ok'){
+ let el=document.getElementById('rbmCloudStatus');
+ if(!el){el=document.createElement('button');el.id='rbmCloudStatus';el.type='button';el.style.cssText='position:fixed;right:12px;bottom:12px;z-index:2147483000;border-radius:999px;padding:8px 11px;background:#090b0e;border:1px solid rgba(255,106,0,.45);font:800 10px/1 Inter,system-ui;box-shadow:0 10px 28px rgba(0,0,0,.42);cursor:pointer';document.body.appendChild(el);el.onclick=openPanel}
+ el.textContent='● '+text;el.style.color=state==='bad'?'#fca5a5':state==='sync'?'#fdba74':'#6ee7b7';
+}
+function buildPanel(){if(document.getElementById('rbmSyncV3Panel'))return;const st=document.createElement('style');st.textContent=`#rbmSyncV3Panel{position:fixed;inset:0;z-index:2147483647;display:none;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.82);backdrop-filter:blur(10px)}#rbmSyncV3Panel.show{display:flex}.rbmSyncV3Card{width:min(430px,100%);border-radius:18px;padding:22px;background:linear-gradient(145deg,#14171b,#080a0d);border:1px solid rgba(255,106,0,.45);color:#f8fafc;font-family:Inter,system-ui;box-shadow:0 30px 90px rgba(0,0,0,.75)}.rbmSyncV3Brand{font:italic 900 32px 'Barlow Condensed',Impact,sans-serif;color:#ff6a00}.rbmSyncV3Info{font-size:11px;color:#aeb4bb;line-height:1.55;margin:10px 0 16px}.rbmSyncV3Grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.rbmSyncV3Btn{min-height:43px;border-radius:9px;border:1px solid #353a40;background:#111419;color:#fff;font-weight:800;font-size:10px}.rbmSyncV3Btn.primary{background:linear-gradient(135deg,#ff8a00,#c2410c);border-color:#ff8a1f}.rbmSyncV3State{margin-top:13px;padding-top:11px;border-top:1px solid rgba(255,255,255,.08);font-size:10px;color:#9ca3af}`;document.head.appendChild(st);
+ const p=document.createElement('div');p.id='rbmSyncV3Panel';p.innerHTML=`<div class="rbmSyncV3Card"><div class="rbmSyncV3Brand">RBM CLOUD</div><div class="rbmSyncV3Info">Sinkronisasi aman dua arah. Data HP dan komputer digabung berdasarkan ID transaksi, dan data cloud kosong tidak akan menghapus data lokal.</div><div class="rbmSyncV3Grid"><button class="rbmSyncV3Btn primary" id="rbmV3Sync">SYNC SEKARANG</button><button class="rbmSyncV3Btn" id="rbmV3Backup">BACKUP SEKARANG</button><button class="rbmSyncV3Btn" id="rbmV3Close" style="grid-column:1/-1">TUTUP</button></div><div class="rbmSyncV3State" id="rbmV3State">Memeriksa akun...</div></div>`;document.body.appendChild(p);p.onclick=e=>{if(e.target===p)closePanel()};document.getElementById('rbmV3Close').onclick=closePanel;document.getElementById('rbmV3Sync').onclick=()=>syncAll(true);document.getElementById('rbmV3Backup').onclick=()=>backup(true);updatePanel();
+}
+function openPanel(){buildPanel();document.getElementById('rbmSyncV3Panel').classList.add('show');updatePanel()}
+function closePanel(){document.getElementById('rbmSyncV3Panel')?.classList.remove('show')}
+function updatePanel(extra=''){const e=document.getElementById('rbmV3State');if(!e)return;e.innerHTML=session?.user?`Akun: <b style="color:#fff">${session.user.email||'Admin'}</b><br>Backup terakhir: ${nativeGet(BACKUP)?new Date(nativeGet(BACKUP)).toLocaleString('id-ID'):'belum ada'}${extra?'<br>'+extra:''}`:'Belum login.'}
+function normTx(x){return {user_id:session.user.id,id:String(x.id),date:x.date||new Date().toISOString(),customer:x.customer||'Umum',name:x.name||'',notes:x.notes||'',qty:Number(x.qty||0),unit:x.unit||'pcs',price:Number(x.price||0),cost:Number(x.cost||0)}}
+function normCf(x){return {user_id:session.user.id,id:String(x.id),date:x.date||new Date().toISOString(),type:x.type==='out'?'out':'in',amount:Number(x.amount||0),notes:x.notes||''}}
+function localTx(x){return {id:isNaN(Number(x.id))?x.id:Number(x.id),date:x.date,customer:x.customer||'Umum',name:x.name||'',notes:x.notes||'',qty:Number(x.qty||0),unit:x.unit||'pcs',price:Number(x.price||0),cost:Number(x.cost||0)}}
+function localCf(x){return {id:isNaN(Number(x.id))?x.id:Number(x.id),date:x.date,type:x.type,amount:Number(x.amount||0),notes:x.notes||''}}
+function merge(local,cloud,deleted,convert){
+ const m=new Map();(cloud||[]).forEach(x=>{if(!deleted.has(String(x.id)))m.set(String(x.id),convert(x))});(local||[]).forEach(x=>{if(!deleted.has(String(x.id)))m.set(String(x.id),x)});return [...m.values()].sort((a,b)=>new Date(b.date||0)-new Date(a.date||0));
+}
+async function applyDeletes(table,delKey){const d=[...deletedSet(delKey)];if(!d.length)return;const {error}=await sb.from(table).delete().eq('user_id',session.user.id).in('id',d);if(error)throw error}
+async function syncAll(manual=false){
+ if(syncing||!sb||!session?.user)return;syncing=true;status('SINKRON...','sync');
+ try{
+   const beforeTx=parse(TX,[]),beforeCf=parse(CF,[]),store=parse(ST,{}),dtx=deletedSet(DTX),dcf=deletedSet(DCF);
+   await applyDeletes('transactions',DTX);await applyDeletes('cash_flows',DCF);
+   const [tr,cr,pr]=await Promise.all([sb.from('transactions').select('*').eq('user_id',session.user.id),sb.from('cash_flows').select('*').eq('user_id',session.user.id),sb.from('store_profiles').select('*').eq('user_id',session.user.id).maybeSingle()]);
+   if(tr.error)throw tr.error;if(cr.error)throw cr.error;if(pr.error)throw pr.error;
+   const tx=merge(beforeTx,tr.data||[],dtx,localTx),cf=merge(beforeCf,cr.data||[],dcf,localCf);
+   nativeSet(TX,JSON.stringify(tx));nativeSet(CF,JSON.stringify(cf));
+   if(pr.data){const mergedStore={name:store.name||pr.data.store_name||'Rezeki Berkah Motor',phone:store.phone||pr.data.phone||'',address:store.address||pr.data.address||''};nativeSet(ST,JSON.stringify(mergedStore))}
+   if(tx.length){const r=await sb.from('transactions').upsert(tx.map(normTx),{onConflict:'user_id,id'});if(r.error)throw r.error}
+   if(cf.length){const r=await sb.from('cash_flows').upsert(cf.map(normCf),{onConflict:'user_id,id'});if(r.error)throw r.error}
+   const s=parse(ST,{});const rp=await sb.from('store_profiles').upsert({user_id:session.user.id,store_name:s.name||'Rezeki Berkah Motor',phone:s.phone||'',address:s.address||'',updated_at:new Date().toISOString()},{onConflict:'user_id'});if(rp.error)throw rp.error;
+   saveDeleted(DTX,new Set());saveDeleted(DCF,new Set());status('CLOUD TERSINKRON','ok');updatePanel(`Transaksi: ${tx.length} • Kas: ${cf.length}`);window.dispatchEvent(new CustomEvent('rbm-cloud-synced',{detail:{transactions:tx.length,cash:cf.length}}));
+   const changed=JSON.stringify(beforeTx)!==JSON.stringify(tx)||JSON.stringify(beforeCf)!==JSON.stringify(cf);
+   if(changed&&!sessionStorage.getItem('rbm_v3_reloaded')){sessionStorage.setItem('rbm_v3_reloaded','1');setTimeout(()=>location.reload(),300)}else sessionStorage.removeItem('rbm_v3_reloaded');
+ }catch(e){console.error('RBM sync v3',e);status('SYNC GAGAL','bad');updatePanel('Error: '+e.message)}finally{syncing=false}
+}
+async function backup(manual=false){if(!sb||!session?.user)return;try{status('BACKUP...','sync');const {error}=await sb.from('app_backups').insert({user_id:session.user.id,payload:{transactions:parse(TX,[]),cash_flows:parse(CF,[]),store:parse(ST,{})},created_at:new Date().toISOString()});if(error)throw error;nativeSet(BACKUP,new Date().toISOString());status('CLOUD TERSINKRON','ok');updatePanel(manual?'Backup berhasil.':'')}catch(e){status('BACKUP GAGAL','bad');updatePanel('Backup gagal: '+e.message)}}
+function schedule(){if(!session?.user)return;clearTimeout(timer);timer=setTimeout(()=>syncAll(false),900)}
+async function init(){installStorageHook();buildPanel();if(!valid()){status('CLOUD BELUM SIAP','bad');return}sb=window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseAnonKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});const g=await sb.auth.getSession();session=g.data.session;if(session){status('CLOUD ONLINE','ok');await syncAll(false)}else status('BELUM LOGIN','bad');sb.auth.onAuthStateChange((ev,s)=>{session=s;updatePanel();if(s){status('CLOUD ONLINE','ok');setTimeout(()=>syncAll(false),150)}else status('BELUM LOGIN','bad')});periodic=setInterval(()=>{if(session?.user)syncAll(false)},30000);setInterval(()=>{if(session?.user)backup(false)},5*60*1000);window.addEventListener('online',()=>session?.user&&syncAll(false));window.addEventListener('offline',()=>status('OFFLINE • DATA LOKAL','bad'))}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+})();
